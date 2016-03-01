@@ -4,6 +4,8 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using Microsoft.Xna.Framework.Input;
+using StardewValley;
+using StardewValley.Menus;
 
 namespace StardewModdingAPI
 {
@@ -23,6 +25,14 @@ namespace StardewModdingAPI
         public delegate void KeyStateChanged(Keys key);
         public static event KeyStateChanged KeyPressed = delegate { };
 
+        public delegate void ClickableMenuChanged(IClickableMenu newMenu);
+        public static event ClickableMenuChanged MenuChanged = delegate { };
+
+        public delegate void GameLocationsChanged(List<GameLocation> newLocations);
+        public static event GameLocationsChanged LocationsChanged = delegate { };
+
+        public delegate void CurrentLocationsChanged(GameLocation newLocation);
+        public static event CurrentLocationsChanged CurrentLocationChanged = delegate { };
 
         public static void InvokeGameLoaded()
         {
@@ -31,22 +41,50 @@ namespace StardewModdingAPI
 
         public static void InvokeInitialize()
         {
-            Initialize.Invoke();
+            try
+            {
+                Initialize.Invoke();
+            }
+            catch (Exception ex)
+            {
+                Program.LogError("An exception occured in XNA Initialize: " + ex.ToString());
+            }
         }
 
         public static void InvokeLoadContent()
         {
-            LoadContent.Invoke();
+            try
+            {
+                LoadContent.Invoke();
+            }
+            catch (Exception ex)
+            {
+                Program.LogError("An exception occured in XNA LoadContent: " + ex.ToString());
+            }
         }
 
         public static void InvokeUpdateTick()
         {
-            UpdateTick.Invoke();
+            try
+            {
+                UpdateTick.Invoke();
+            }
+            catch (Exception ex)
+            {
+                Program.LogError("An exception occured in XNA UpdateTick: " + ex.ToString());
+            }
         }
 
         public static void InvokeDrawTick()
         {
-            DrawTick.Invoke();
+            try
+            {
+                DrawTick.Invoke();
+            }
+            catch (Exception ex)
+            {
+                Program.LogError("An exception occured in XNA DrawTick: " + ex.ToString());
+            }
         }
 
         public static void InvokeKeyboardChanged(KeyboardState newState)
@@ -57,6 +95,21 @@ namespace StardewModdingAPI
         public static void InvokeKeyPressed(Keys key)
         {
             KeyPressed.Invoke(key);
+        }
+
+        public static void InvokeMenuChanged(IClickableMenu newMenu)
+        {
+            MenuChanged.Invoke(newMenu);
+        }
+
+        public static void InvokeLocationsChanged(List<GameLocation> newLocations)
+        {
+            LocationsChanged.Invoke(newLocations);
+        }
+
+        public static void InvokeCurrentLocationChanged(GameLocation newLocation)
+        {
+            CurrentLocationChanged.Invoke(newLocation);
         }
     }
 }

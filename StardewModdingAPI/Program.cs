@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Reflection.Emit;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,18 +13,28 @@ using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
 using StardewModdingAPI.Inheritance;
+using StardewModdingAPI.Inheritance.Menus;
 using StardewValley;
 using StardewValley.Menus;
 using StardewValley.Minigames;
 using StardewValley.Network;
+using StardewValley.Tools;
 using Keys = Microsoft.Xna.Framework.Input.Keys;
+using Object = StardewValley.Object;
 
 namespace StardewModdingAPI
 {
     public class Program
     {
+        public static string ExecutionPath { get; private set; }
         public static string DataPath = Path.Combine(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "StardewValley"));
         public static string ModPath = Path.Combine(Path.Combine(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "StardewValley")), "Mods");
+        public static string ModContentPath = Path.Combine(Path.Combine(Path.Combine(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "StardewValley")), "Mods"), "Content");
+        public static string LogPath = Path.Combine(Path.Combine(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "StardewValley")), "ErrorLogs");
+        public static string CurrentLog { get; private set; }
+        public static StreamWriter LogStream { get; private set; }
+
+        public static Texture2D DebugPixel { get; private set; }
 
         public static SGame gamePtr;
         public static bool ready;
@@ -36,27 +47,44 @@ namespace StardewModdingAPI
         public static Thread gameThread;
         public static Thread consoleInputThread;
 
-        public static int frozenTime;
-        public static bool infHealth, infStamina, infMoney, freezeTime;
-
         /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
         private static void Main(string[] args)
         {
             Console.Title = "Stardew Modding API Console";
 
-            AppDomain.CurrentDomain.AssemblyResolve += new ResolveEventHandler(CurrentDomain_AssemblyResolve);
+            Application.ThreadException += Application_ThreadException;
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+            AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
 
             if (File.Exists(ModPath))
                 File.Delete(ModPath);
             if (!Directory.Exists(ModPath))
                 Directory.CreateDirectory(ModPath);
+            if (!Directory.Exists(ModContentPath))
+                Directory.CreateDirectory(ModContentPath);
 
-            Log(Assembly.GetExecutingAssembly().Location);
+            ExecutionPath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+            CurrentLog = LogPath + "\\MODDED_ProgramLog_" + System.DateTime.Now.Ticks + ".txt";
+
+            Log(ExecutionPath, false);
+
+            LogStream = new StreamWriter(CurrentLog, false);
+
             LogInfo("Initializing SDV Assembly...");
-            StardewAssembly = AppDomain.CurrentDomain.GetAssemblies().First(x => x.GetName().Name.Equals("Stardew Valley"));
+            if (!File.Exists(ExecutionPath + "\\Stardew Valley.exe"))
+            {
+                LogError("Could not find: " + ExecutionPath + "\\Stardew Valley.exe");
+                LogError("The API will now terminate.");
+                Console.ReadKey();
+                Environment.Exit(-4);
+            }
+
+            StardewAssembly = Assembly.LoadFile(ExecutionPath + "\\Stardew Valley.exe");
             StardewProgramType = StardewAssembly.GetType("StardewValley.Program", true);
             StardewGameInfo = StardewProgramType.GetField("gamePtr");
+
+
 
             LogInfo("Injecting New SDV Version...");
             Game1.version += "-Z_MODDED";
@@ -65,33 +93,68 @@ namespace StardewModdingAPI
             LogInfo("Starting SDV...");
             gameThread.Start();
 
-            SGame.Thing();
-
+            SGame.GetStaticFields();
+            
             while (!ready)
             {
-
+                
             }
 
             Log("SDV Loaded Into Memory");
 
             consoleInputThread = new Thread(ConsoleInputThread);
             LogInfo("Initializing Console Input Thread...");
-            consoleInputThread.Start();
+
+            Command.RegisterCommand("help", "Lists all commands | 'help <cmd>' returns command description").CommandFired += help_CommandFired;
 
             Events.KeyPressed += Events_KeyPressed;
-            Events.UpdateTick += Events_UpdateTick;
+            Events.LoadContent += Events_LoadContent;
+            //Events.MenuChanged += Events_MenuChanged;
+            Events.LocationsChanged += Events_LocationsChanged;
+            Events.CurrentLocationChanged += Events_CurrentLocationChanged;
 
             LogInfo("Applying Final SDV Tweaks...");
             StardewInvoke(() =>
             {
                                     gamePtr.IsMouseVisible = false;
-                                    gamePtr.Window.Title = "Stardew Valley";
+                                    gamePtr.Window.Title = "Stardew Valley - Version " + Game1.version;
             });
 
             LogInfo("Game Loaded");
-            LogColour(ConsoleColor.Cyan, "Type 'help' for help, or 'help <cmd>' for a command's usage");
             Events.InvokeGameLoaded();
+
+            consoleInputThread.Start();
+            LogColour(ConsoleColor.Cyan, "Type 'help' for help, or 'help <cmd>' for a command's usage");
+
+
+            while (ready)
+            {
+                //Check if the game is still running 10 times a second
+                Thread.Sleep(1000 / 10);
+            }
+
+            if (consoleInputThread != null && consoleInputThread.ThreadState == ThreadState.Running)
+                consoleInputThread.Abort();
+
+            LogInfo("Game Execution Finished");
+            LogInfo("Shutting Down...");
+            int time = 0;
+            int step = 100;
+            int target = 1000;
+            while (true)
+            {
+                time += step;
+                Thread.Sleep(step);
+
+                Console.Write(".");
+
+                if (time >= target)
+                    break;
+            }
+            Environment.Exit(0);
         }
+
+        
 
         /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -102,10 +165,12 @@ namespace StardewModdingAPI
             try
             {
                 gamePtr = new SGame();
+                LogInfo("Patching SDV Graphics Profile...");
                 Game1.graphics.GraphicsProfile = GraphicsProfile.HiDef;
                 LoadMods();
 
                 StardewForm = Control.FromHandle(Program.gamePtr.Window.Handle).FindForm();
+                StardewForm.Closing += StardewForm_Closing;
                 StardewGameInfo.SetValue(StardewProgramType, gamePtr);
 
                 ready = true;
@@ -116,12 +181,15 @@ namespace StardewModdingAPI
             {
                 LogError("Game failed to start: " + ex);
             }
+        }
+
+        static void StardewForm_Closing(object sender, CancelEventArgs e)
+        {
+            e.Cancel = true;
+            gamePtr.Exit();
+            gamePtr.Dispose();
+            StardewForm.Hide();
             ready = false;
-            if (consoleInputThread != null && consoleInputThread.ThreadState == ThreadState.Running)
-                consoleInputThread.Abort();
-            Log("Game Execution Finished");
-            Console.ReadKey();
-            Environment.Exit(0);
         }
 
         public static void LoadMods()
@@ -151,12 +219,37 @@ namespace StardewModdingAPI
         {
             string input = string.Empty;
 
-            RegisterCommands();
-
             while (true)
             {
                 Command.CallCommand(Console.ReadLine());
             }
+        }
+
+        static void Events_LoadContent()
+        {
+            LogInfo("Initializing Debug Assets...");
+            DebugPixel = new Texture2D(Game1.graphics.GraphicsDevice, 1, 1);
+            DebugPixel.SetData(new Color[] { Color.White });
+
+            LogColour(ConsoleColor.Magenta, "REGISTERING BASE CUSTOM ITEM");
+            SObject so = new SObject();
+            so.Name = "Mario Block";
+            so.CategoryName = "SMAPI Test Mod";
+            so.Description = "It's a block from Mario!\nLoaded in realtime by SMAPI.";
+            so.Texture = Texture2D.FromStream(Game1.graphics.GraphicsDevice, new FileStream(ModContentPath + "\\Test.png", FileMode.Open));
+            so.IsPassable = true;
+            so.IsPlaceable = true;
+            LogColour(ConsoleColor.Cyan, "REGISTERED WITH ID OF: " + SGame.RegisterModItem(so));
+
+            LogColour(ConsoleColor.Magenta, "REGISTERING SECOND CUSTOM ITEM");
+            SObject so2 = new SObject();
+            so2.Name = "Mario Painting";
+            so2.CategoryName = "SMAPI Test Mod";
+            so2.Description = "It's a painting of a creature from Mario!\nLoaded in realtime by SMAPI.";
+            so2.Texture = Texture2D.FromStream(Game1.graphics.GraphicsDevice, new FileStream(ModContentPath + "\\PaintingTest.png", FileMode.Open));
+            so2.IsPassable = true;
+            so2.IsPlaceable = true;
+            LogColour(ConsoleColor.Cyan, "REGISTERED WITH ID OF: " + SGame.RegisterModItem(so2));
         }
 
         static void Events_KeyPressed(Keys key)
@@ -164,24 +257,25 @@ namespace StardewModdingAPI
             
         }
 
-        static void Events_UpdateTick()
+        static void Events_MenuChanged(IClickableMenu newMenu)
         {
-            if (infHealth)
+            LogInfo("NEW MENU: " + newMenu.GetType());
+            if (newMenu is GameMenu)
             {
-                Game1.player.health = Game1.player.maxHealth;
+                Game1.activeClickableMenu = SGameMenu.ConstructFromBaseClass(Game1.activeClickableMenu as GameMenu);
             }
-            if (infStamina)
-            {
-                Game1.player.stamina = Game1.player.MaxStamina;
-            }
-            if (infMoney)
-            {
-                Game1.player.money = 999999;
-            }
-            if (freezeTime)
-            {
-                Game1.timeOfDay = frozenTime;
-            }
+        }
+
+        static void Events_LocationsChanged(List<GameLocation> newLocations)
+        {
+            SGame.ModLocations = SGameLocation.ConvertGameLocations(Game1.locations);
+        }
+
+        static void Events_CurrentLocationChanged(GameLocation newLocation)
+        {
+            SGame.CurrentLocation = null;
+            System.Threading.Thread.Sleep(10);
+            SGame.CurrentLocation = SGame.ModLocations.First(x => x.name == newLocation.name);
         }
 
         public static void StardewInvoke(Action a)
@@ -189,58 +283,21 @@ namespace StardewModdingAPI
             StardewForm.Invoke(a);
         }
 
-        public static Assembly CurrentDomain_AssemblyResolve(object sender, ResolveEventArgs args)
+        static void CurrentDomain_UnhandledException(object sender, UnhandledExceptionEventArgs e)
         {
-            string dllName = args.Name.Contains(',') ? args.Name.Substring(0, args.Name.IndexOf(',')) : args.Name.Replace(".dll", "");
+            Console.WriteLine("An exception has been caught");
+            File.WriteAllText(Program.LogPath + "\\MODDED_ErrorLog_" + Extensions.Random.Next(100000000, 999999999) + ".txt", e.ExceptionObject.ToString());
+        }
 
-            dllName = dllName.Replace(".", "_");
-
-            if (dllName.EndsWith("_resources")) return null;
-
-            System.Resources.ResourceManager rm = new System.Resources.ResourceManager(typeof(Program).Namespace + ".Properties.Resources", System.Reflection.Assembly.GetExecutingAssembly());
-
-            byte[] bytes = (byte[])rm.GetObject(dllName);
-
-            return System.Reflection.Assembly.Load(bytes);
+        static void Application_ThreadException(object sender, ThreadExceptionEventArgs e)
+        {
+            Console.WriteLine("A thread exception has been caught");
+            File.WriteAllText(Program.LogPath + "\\MODDED_ErrorLog_" + Extensions.Random.Next(100000000, 999999999) + ".txt", e.Exception.ToString());
         }
 
         /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
-
-        #region Commands
-
-        public static void RegisterCommands()
-        {
-            Command.RegisterCommand("help", "Lists all commands | 'help <cmd>' returns command description").CommandFired += help_CommandFired;
-            Command.RegisterCommand("types", "Lists all value types | types").CommandFired += types_CommandFired;
-
-            Command.RegisterCommand("hide", "Hides the game form | hide").CommandFired += hide_CommandFired;
-            Command.RegisterCommand("show", "Shows the game form | show").CommandFired += show_CommandFired;
-
-            Command.RegisterCommand("save", "Saves the game? Doesn't seem to work. | save").CommandFired += save_CommandFired;
-
-            Command.RegisterCommand("exit", "Closes the game | exit").CommandFired += exit_CommandFired;
-            Command.RegisterCommand("stop", "Closes the game | stop").CommandFired += exit_CommandFired;
-
-            Command.RegisterCommand("player_setname", "Sets the player's name | player_setname <object> <value>", new[] { "(player, pet, farm)<object> (String)<value> The target name" }).CommandFired += player_setName;
-            Command.RegisterCommand("player_setmoney", "Sets the player's money | player_setmoney <value>|inf", new[] { "(Int32)<value> The target money" }).CommandFired += player_setMoney;
-            Command.RegisterCommand("player_setstamina", "Sets the player's stamina | player_setstamina <value>|inf", new[] { "(Int32)<value> The target stamina" }).CommandFired += player_setStamina;
-            Command.RegisterCommand("player_setmaxstamina", "Sets the player's max stamina | player_setmaxstamina <value>", new[] { "(Int32)<value> The target max stamina" }).CommandFired += player_setMaxStamina;
-            Command.RegisterCommand("player_sethealth", "Sets the player's health | player_sethealth <value>|inf", new[] { "(Int32)<value> The target health" }).CommandFired += player_setHealth;
-            Command.RegisterCommand("player_setmaxhealth", "Sets the player's max health | player_setmaxhealth <value>", new[] { "(Int32)<value> The target max health" }).CommandFired += player_setMaxHealth;
-            Command.RegisterCommand("player_setimmunity", "Sets the player's immunity | player_setimmunity <value>", new[] { "(Int32)<value> The target immunity" }).CommandFired += player_setImmunity;
-
-            Command.RegisterCommand("player_setlevel", "Sets the player's specified skill to the specified value | player_setlevel <skill> <value>", new[] { "(luck, mining, combat, farming, fishing, foraging)<skill> (1-10)<value> The target level" }).CommandFired += player_setLevel;
-            Command.RegisterCommand("player_setspeed", "Sets the player's speed to the specified value?", new[] {"(Int32)<value> The target speed [0 is normal]"}).CommandFired += player_setSpeed;
-            Command.RegisterCommand("player_changecolour", "Sets the player's colour of the specified object | player_changecolor <object> <colour>", new[] { "(hair, eyes, pants)<object> (r,g,b)<colour>" }).CommandFired += player_changeColour;
-            Command.RegisterCommand("player_changestyle", "Sets the player's style of the specified object | player_changecolor <object> <value>", new[] { "(hair, shirt, skin, acc, shoe, swim, gender)<object> (Int32)<value>" }).CommandFired += player_changeStyle;
-
-            Command.RegisterCommand("world_settime", "Sets the time to the specified value | world_settime <value>", new[] { "(Int32)<value> The target time [06:00 AM is 600]" }).CommandFired += world_setTime;
-            Command.RegisterCommand("world_freezetime", "Freezes or thaws time | world_freezetime <value>", new[] { "(0 - 1)<value> Whether or not to freeze time. 0 is thawed, 1 is frozen" }).CommandFired += world_freezeTime;
-            Command.RegisterCommand("world_setday", "Sets the day to the specified value | world_setday <value>", new[] { "(Int32)<value> The target day [1-28]" }).CommandFired += world_setDay;
-            Command.RegisterCommand("world_setseason", "Sets the season to the specified value | world_setseason <value>", new[] { "(winter, spring, summer, fall)<value> The target season" }).CommandFired += world_setSeason;
-        }
 
         static void help_CommandFired(Command cmd)
         {
@@ -261,488 +318,6 @@ namespace StardewModdingAPI
                 LogInfo("Commands: " + Command.RegisteredCommands.Select(x => x.CommandName).ToSingular());
         }
 
-        static void types_CommandFired(Command cmd)
-        {
-            LogInfo("[Int32: {0} - {1}], [Int64: {2} - {3}], [String: \"raw text\"], [Colour: r,g,b (EG: 128, 32, 255)]", Int32.MinValue, Int32.MaxValue, Int64.MinValue, Int64.MaxValue);
-        }
-
-        static void hide_CommandFired(Command cmd)
-        {
-            StardewInvoke(() => { StardewForm.Hide(); });
-        }
-
-        static void show_CommandFired(Command cmd)
-        {
-            StardewInvoke(() => { StardewForm.Show(); });
-        }
-
-        static void save_CommandFired(Command cmd)
-        {
-            StardewValley.SaveGame.Save();
-        }
-
-        static void exit_CommandFired(Command cmd)
-        {
-            Application.Exit();
-            Environment.Exit(0);
-        }
-
-        static void player_setName(Command cmd)
-        {
-            if (cmd.CalledArgs.Length > 1)
-            {
-                string obj = cmd.CalledArgs[0];
-                string[] objs = "player,pet,farm".Split(new[] {','});
-                if (objs.Contains(obj))
-                {
-                    switch (obj)
-                    {
-                        case "player":
-                            Game1.player.Name = cmd.CalledArgs[1];
-                            break;
-                        case "pet":
-                            LogError("Pets cannot currently be renamed.");
-                            break;
-                        case "farm":
-                            Game1.player.farmName = cmd.CalledArgs[1];
-                            break;
-                    }
-                }
-                else
-                {
-                    LogObjectInvalid();
-                }
-            }
-            else
-            {
-                LogObjectValueNotSpecified();
-            }
-        }
-
-        static void player_setMoney(Command cmd)
-        {
-            if (cmd.CalledArgs.Length > 0)
-            {
-                if (cmd.CalledArgs[0] == "inf")
-                {
-                    infMoney = true;
-                }
-                else
-                {
-                    infMoney = false;
-                    int ou = 0;
-                    if (Int32.TryParse(cmd.CalledArgs[0], out ou))
-                    {
-                        Game1.player.Money = ou;
-                        LogInfo("Set {0}'s money to {1}", Game1.player.Name, Game1.player.Money);
-                    }
-                    else
-                    {
-                        LogValueNotInt32();
-                    }
-                }
-            }
-            else
-            {
-                LogValueNotSpecified();
-            }
-        }
-
-        static void player_setStamina(Command cmd)
-        {
-            if (cmd.CalledArgs.Length > 0)
-            {
-                if (cmd.CalledArgs[0] == "inf")
-                {
-                    infStamina = true;
-                }
-                else
-                {
-                    infStamina = false;
-                    int ou = 0;
-                    if (Int32.TryParse(cmd.CalledArgs[0], out ou))
-                    {
-                        Game1.player.Stamina = ou;
-                        LogInfo("Set {0}'s stamina to {1}", Game1.player.Name, Game1.player.Stamina);
-                    }
-                    else
-                    {
-                        LogValueNotInt32();
-                    }
-                }
-            }
-            else
-            {
-                LogValueNotSpecified();
-            }
-        }
-
-        static void player_setMaxStamina(Command cmd)
-        {
-            if (cmd.CalledArgs.Length > 0)
-            {
-                int ou = 0;
-                if (Int32.TryParse(cmd.CalledArgs[0], out ou))
-                {
-                    Game1.player.MaxStamina = ou;
-                    LogInfo("Set {0}'s max stamina to {1}", Game1.player.Name, Game1.player.MaxStamina);
-                }
-                else
-                {
-                    LogValueNotInt32();
-                }
-            }
-            else
-            {
-                LogValueNotSpecified();
-            }
-        }
-
-        static void player_setLevel(Command cmd)
-        {
-            if (cmd.CalledArgs.Length > 1)
-            {
-                string skill = cmd.CalledArgs[0];
-                string[] skills = "luck,mining,combat,farming,fishing,foraging".Split(new[] { ',' });
-                if (skills.Contains(skill))
-                {
-                    int ou = 0;
-                    if (Int32.TryParse(cmd.CalledArgs[1], out ou))
-                    {
-                        switch (skill)
-                        {
-                            case "luck":
-                                Game1.player.LuckLevel = ou;
-                                break;
-                            case "mining":
-                                Game1.player.MiningLevel = ou;
-                                break;
-                            case "combat":
-                                Game1.player.CombatLevel = ou;
-                                break;
-                            case "farming":
-                                Game1.player.FarmingLevel = ou;
-                                break;
-                            case "fishing":
-                                Game1.player.FishingLevel = ou;
-                                break;
-                            case "foraging":
-                                Game1.player.ForagingLevel = ou;
-                                break;
-                        }
-                    }
-                    else
-                    {
-                        LogValueNotInt32();
-                    }
-                }
-                else
-                {
-                    LogError("<skill> is invalid");
-                }
-            }
-            else
-            {
-                LogError("<skill> and <value> must be specified");
-            }
-        }
-
-        static void player_setSpeed(Command cmd)
-        {
-            if (cmd.CalledArgs.Length > 0)
-            {
-                if (cmd.CalledArgs[0].IsInt32())
-                {
-                    Game1.player.addedSpeed = cmd.CalledArgs[0].AsInt32();
-                    LogInfo("Set {0}'s added speed to {1}", Game1.player.Name, Game1.player.addedSpeed);
-                }
-                else
-                {
-                    LogValueNotInt32();
-                }
-            }
-            else
-            {
-                LogValueNotSpecified();
-            }
-        }
-
-        static void player_changeColour(Command cmd)
-        {
-            if (cmd.CalledArgs.Length > 1)
-            {
-                string obj = cmd.CalledArgs[0];
-                string[] objs = "hair,eyes,pants".Split(new[] { ',' });
-                if (objs.Contains(obj))
-                {
-                    string[] cs = cmd.CalledArgs[1].Split(new[] {','}, 3);
-                    if (cs[0].IsInt32() && cs[1].IsInt32() && cs[2].IsInt32())
-                    {
-                        Color c = new Color(cs[0].AsInt32(), cs[1].AsInt32(), cs[2].AsInt32());
-                        switch (obj)
-                        {
-                            case "hair":
-                                Game1.player.hairstyleColor = c;
-                                break;
-                            case "eyes":
-                                Game1.player.changeEyeColor(c);
-                                break;
-                            case "pants":
-                                Game1.player.pantsColor = c;
-                                break;
-                        }
-                    }
-                    else
-                    {
-                        LogError("<colour> is invalid");
-                    }
-                }
-                else
-                {
-                    LogObjectInvalid();
-                }
-            }
-            else
-            {
-                LogError("<object> and <colour> must be specified");
-            }
-        }
-
-        static void player_changeStyle(Command cmd)
-        {
-            if (cmd.CalledArgs.Length > 1)
-            {
-                string obj = cmd.CalledArgs[0];
-                string[] objs = "hair,shirt,skin,acc,shoe,swim,gender".Split(new[] { ',' });
-                if (objs.Contains(obj))
-                {
-                    if (cmd.CalledArgs[1].IsInt32())
-                    {
-                        int i = cmd.CalledArgs[1].AsInt32();
-                        switch (obj)
-                        {
-                            case "hair":
-                                Game1.player.changeHairStyle(i);
-                                break;
-                            case "shirt":
-                                Game1.player.changeShirt(i);
-                                break;
-                            case "acc":
-                                Game1.player.changeAccessory(i);
-                                break;
-                            case "skin":
-                                Game1.player.changeSkinColor(i);
-                                break;
-                            case "shoe":
-                                Game1.player.changeShoeColor(i);
-                                break;
-                            case "swim":
-                                if (i == 0)
-                                    Game1.player.changeOutOfSwimSuit();
-                                else if (i == 1)
-                                    Game1.player.changeIntoSwimsuit();
-                                else
-                                    LogError("<value> must be 0 or 1 for this <object>");
-                                break;
-                            case "gender":
-                                if (i == 0)
-                                    Game1.player.changeGender(true);
-                                else if (i == 1)
-                                    Game1.player.changeGender(false);
-                                else
-                                    LogError("<value> must be 0 or 1 for this <object>");
-                                break;
-                        }
-                    }
-                    else
-                    {
-                        LogValueInvalid();
-                    }
-                }
-                else
-                {
-                    LogObjectInvalid();
-                }
-            }
-            else
-            {
-                LogObjectValueNotSpecified();
-            }
-        }
-
-        static void world_freezeTime(Command cmd)
-        {
-            if (cmd.CalledArgs.Length > 0)
-            {
-                if (cmd.CalledArgs[0].IsInt32())
-                {
-                    if (cmd.CalledArgs[0].AsInt32() == 0 || cmd.CalledArgs[0].AsInt32() == 1)
-                    {
-                        freezeTime = cmd.CalledArgs[0].AsInt32() == 1;
-                        frozenTime = freezeTime ? Game1.timeOfDay : 0;
-                        LogInfo("Time is now " + (freezeTime ? "frozen" : "thawed"));
-                    }
-                    else
-                    {
-                        LogError("<value> should be 0 or 1");
-                    }
-                }
-                else
-                {
-                    LogValueNotInt32();
-                }
-            }
-            else
-            {
-                LogValueNotSpecified();
-            }
-        }
-
-        static void world_setTime(Command cmd)
-        {
-            if (cmd.CalledArgs.Length > 0)
-            {
-                if (cmd.CalledArgs[0].IsInt32())
-                {
-                    if (cmd.CalledArgs[0].AsInt32() <= 2600 && cmd.CalledArgs[0].AsInt32() >= 600)
-                    {
-                        Game1.timeOfDay = cmd.CalledArgs[0].AsInt32();
-                        frozenTime = freezeTime ? Game1.timeOfDay : 0;
-                        LogInfo("Time set to: " + Game1.timeOfDay);
-                    }
-                    else
-                    {
-                        LogError("<value> should be between 600 and 2600 (06:00 AM - 02:00 AM [NEXT DAY])");
-                    }
-                }
-                else
-                {
-                    LogValueNotInt32();
-                }
-            }
-            else
-            {
-                LogValueNotSpecified();
-            }
-        }
-
-        static void world_setDay(Command cmd)
-        {
-            if (cmd.CalledArgs.Length > 0)
-            {
-                if (cmd.CalledArgs[0].IsInt32())
-                {
-                    if (cmd.CalledArgs[0].AsInt32() <= 28 && cmd.CalledArgs[0].AsInt32() > 0)
-                    {
-                        Game1.dayOfMonth = cmd.CalledArgs[0].AsInt32();
-                    }
-                    else
-                    {
-                        LogError("<value> must be between 1 and 28");
-                    }
-                }
-                else
-                {
-                    LogValueNotInt32();
-                }
-            }
-            else
-            {
-                LogValueNotSpecified();
-            }
-        }
-
-        static void world_setSeason(Command cmd)
-        {
-            if (cmd.CalledArgs.Length > 0)
-            {
-                string obj = cmd.CalledArgs[0];
-                string[] objs = "winter,spring,summer,fall".Split(new []{','});
-                if (objs.Contains(obj))
-                {
-                    Game1.currentSeason = obj;
-                }
-                else
-                {
-                    LogValueInvalid();
-                }
-            }
-            else
-            {
-                LogValueNotSpecified();
-            }
-        }
-
-        static void player_setHealth(Command cmd)
-        {
-            if (cmd.CalledArgs.Length > 0)
-            {
-                if (cmd.CalledArgs[0] == "inf")
-                {
-                    infHealth = true;
-                }
-                else
-                {
-                    infHealth = false;
-                    if (cmd.CalledArgs[0].IsInt32())
-                    {
-                        Game1.player.health = cmd.CalledArgs[0].AsInt32();
-                    }
-                    else
-                    {
-                        LogValueNotInt32();
-                    }
-                }
-            }
-            else
-            {
-                LogValueNotSpecified();
-            }
-        }
-
-        static void player_setMaxHealth(Command cmd)
-        {
-            if (cmd.CalledArgs.Length > 0)
-            {
-                if (cmd.CalledArgs[0].IsInt32())
-                {
-                    Game1.player.maxHealth = cmd.CalledArgs[0].AsInt32();
-                }
-                else
-                {
-                    LogValueNotInt32();
-                }
-            }
-            else
-            {
-                LogValueNotSpecified();
-            }
-        }
-
-        static void player_setImmunity(Command cmd)
-        {
-            if (cmd.CalledArgs.Length > 0)
-            {
-                if (cmd.CalledArgs[0].IsInt32())
-                {
-                    Game1.player.immunity = cmd.CalledArgs[0].AsInt32();
-                }
-                else
-                {
-                    LogValueNotInt32();
-                }
-            }
-            else
-            {
-                LogValueNotSpecified();
-            }
-        }
-
-        static void blank_command(Command cmd) { }
-
-        #endregion
-
-
 
         /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -752,7 +327,22 @@ namespace StardewModdingAPI
 
         public static void Log(object o, params object[] format)
         {
-            Console.WriteLine("[{0}] {1}", System.DateTime.Now.ToLongTimeString(), String.Format(o.ToString(), format));
+            if (format.Length > 0)
+            {
+                if (format[0] is bool)
+                {
+                    if ((bool)format[0] == false)
+                    {
+                        //suppress logging to file
+                        Console.WriteLine("[{0}] {1}", System.DateTime.Now.ToLongTimeString(), String.Format(o.ToString(), format));
+                        return;
+                    }
+                }
+            }
+            string toLog = string.Format("[{0}] {1}", System.DateTime.Now.ToLongTimeString(), String.Format(o.ToString(), format));
+            Console.WriteLine(toLog);
+            LogStream.WriteLine(toLog);
+            LogStream.Flush();
         }
 
         public static void LogColour(ConsoleColor c, object o, params object[] format)
