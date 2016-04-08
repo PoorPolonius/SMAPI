@@ -1,107 +1,26 @@
-# SMAPI
-A Modding API For Stardew Valley
-See: https://github.com/Zoryn4163/SMAPI-Mods
+## NOTICE: THIS PROJECT IS STILL IN ALPHA
 
-You can create a mod by making a direct reference to the ModdingApi.exe
+# What is SMAPI
 
-From there, you need to inherit from StardewModdingAPI.Mod
+SMAPI (Stardew Modding Application Programming Interface) is a tool to help modders make changes to Stardew. It is a standalone executable which goes alongside your Stardew.exe.
 
-The first class that inherits from that class will be loaded into the game at runtime, and once the game fully initializes the mod, the method Entry() will be called once.
+## Installation
 
-It is recommended to subscribe to an event (from Events.cs) to be able to interface with the game rather than directly make changes from the Entry() method.
+To install SMAPI:
+- Firstly, make sure you have .NET 4.5. You can get it here: https://www.microsoft.com/en-gb/download/details.aspx?id=30653
+- Download the the latest release binary here: https://github.com/ClxS/SMAPI/releases/latest
+- Extract the zip file alongside your Stardew.exe, for example, if using Steam this would be somewhere like C:/ProgramFiles/Steam/steamapps/common/StardewValley
+- To launch SMAPI, launch StardewValleyModdingAPI.exe
 
+To install mods:
+- To install mods just download the mod's .DLL file, and place it in %appdata%\StardewValley\Mods\. Alternatively run the 'run'    program and type %appdata% if you are unable to find the folder
+  SMAPI will take care of the rest!
 
-    TestMod.cs:
-    
-        using System;
-        using System.Collections.Generic;
-        using System.Linq;
-        using System.Text;
-        using System.Threading.Tasks;
-        using Microsoft.Xna.Framework.Input;
-        using StardewModdingAPI;
+## Future Plans
+- Content only mods
+- Support for a wide range of events
+- Enable the addition of new custom content such as locations, NPCs, and items.
 
-        namespace StardewTestMod
-        {
-            public class TestMod : Mod
-            {
-                public override string Name
-                {
-                    get { return "Test Mod"; }
-                }
+## Mod Developers!
 
-                public override string Authour
-                {
-                    get { return "Zoryn Aaron"; }
-                }
-
-                public override string Version
-                {
-                    get { return "0.0.1Test"; }
-                }
-
-                public override string Description
-                {
-                    get { return "A Test Mod"; }
-                }
-
-                public override void Entry()
-                {
-                    Console.WriteLine("Test Mod Has Loaded");
-                    Program.LogError("Test Mod can call to Program.cs in the API");
-                    Program.LogColour(ConsoleColor.Magenta, "Test Mod is just a tiny DLL file in AppData/Roaming/StardewValley/Mods");
-                    
-                    //Subscribe to an event from the modding API
-                    Events.KeyPressed += Events_KeyPressed;
-                }
-
-                void Events_KeyPressed(Keys key)
-                {
-                    Console.WriteLine("TestMod sees that the following key was pressed: " + key);
-                }
-            }
-        }
-        
-        
-Break Fishing (WARNING: SOFTLOCKS YOUR GAME):
-
-    public override void Entry()
-        {
-            Events.UpdateTick += Events_UpdateTick;
-            Events.Initialize += Events_Initialize;
-        }
-    
-    private FieldInfo cmg;
-    private bool gotGame;
-    private SBobberBar sb;
-    void Events_Initialize()
-        {
-            cmg = SGame.StaticFields.First(x => x.Name == "activeClickableMenu");
-        }
-    
-    void Events_UpdateTick()
-        {
-            if (cmg != null && cmg.GetValue(null) != null)
-            {
-                if (cmg.GetValue(null).GetType() == typeof(BobberBar))
-                {
-                    if (!gotGame)
-                    {
-                        gotGame = true;
-                        BobberBar b = (BobberBar)cmg.GetValue(null);
-                        sb = SBobberBar.ConstructFromBaseClass(b);
-                    }
-                    else
-                    {
-                        sb.bobberPosition = Extensions.Random.Next(0, 750);
-                        sb.treasure = true;
-                        sb.distanceFromCatching = 0.5f;
-                    }
-                }
-                else
-                {
-                    gotGame = false;
-                    sb = null;
-                }
-            }
-        }
+Mod developers would work off the release branch. The master branch will contain mid-version updates which could make your mods incompatable with both the current release and the upcoming releases.
